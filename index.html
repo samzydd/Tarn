@@ -195,6 +195,7 @@ uniform float uSwA[5];
 uniform vec3 uSun, uSunW, uMoon, uLD, uSunCol;   // uSunCol: the sun's colour, warmer as it nears the horizon
 uniform float uGlow;   // how much the sky glows with sunset or sunrise
 // sun, its light under water, the moon, and whichever lights the scene
+uniform vec3 uDrops[32];   // raindrops on the sea: x, z, age in seconds (<0 unused)
 uniform float uLK, uNight, uOver, uRain, uSnow;   // light strength, night, overcast, rain, snow
 uniform vec3 uFC, uFR, uFN, uFV;          // the floater: centre and axes
 uniform vec2 uFHalf;
@@ -427,6 +428,23 @@ vec3 aboveWater(vec3 ro, vec3 rd) {
   float tr2 = marchFloat(p + n * 0.01, rf, 4.0);
   if (tr2 > 0.0) refl = mix(refl, floatColor(p + rf * tr2, rf, 0.0) * 0.9, uFA);
   vec3 col = mix(body, refl, F);
+  // ripples catch the light even under a flat grey sky: crests glint pale, and one side of every ring lightens while the other darkens
+  float rip = length(sm.xy);
+  col += mix(vec3(0.55, 0.64, 0.74), vec3(0.18, 0.24, 0.33), uNight) * (smoothstep(0.06, 0.5, rip) * (0.06 + 0.12 * uOver) + dot(sm.xy, normalize(vec2(0.55, 0.84))) * (0.1 + 0.2 * uOver)) * (1.0 - clamp(fp * 40.0, 0.0, 0.8));
+  // each raindrop leaves crisp rings spreading out over the sea: a bright crest with a dark trough just inside it
+  if (uRain > 0.01) {
+    float wpx = max(0.011, fp * 1.4), rr = 0.0;
+    for (int i = 0; i < 32; i++) {
+      vec3 dr = uDrops[i];
+      if (dr.z < 0.0 || dr.z > 1.4) continue;
+      float d = length(p.xz - dr.xy), R = 0.035 + 0.25 * dr.z, fade = (1.0 - dr.z / 1.4) * smoothstep(0.0, 0.06, dr.z);
+      if (abs(d - R) > 0.2) continue;
+      float k = (d - R) / wpx, k2 = (d - R * 0.62) / wpx;
+      rr += (exp(-k * k) - 0.3 * exp(-pow((d - R + 1.7 * wpx) / wpx, 2.0))) * fade;
+      rr += (exp(-k2 * k2) - 0.25 * exp(-pow((d - R * 0.62 + 1.7 * wpx) / wpx, 2.0))) * fade * 0.45;
+    }
+    col += mix(vec3(0.62, 0.72, 0.82), vec3(0.22, 0.3, 0.42), uNight) * rr * 0.27 * uRain;
+  }
   vec3 hv = normalize(uLD - rd);
   float nh = max(dot(n, hv), 0.0), zone = pow(nh, 140.0) * uLK;
   vec2 sc = p.xz * 30.0, cid = floor(sc), cf = fract(sc) - 0.5;
@@ -830,6 +848,7 @@ void main() {
   }
   var wx = { time: 'day', sky: 'clear' }, envNow = { night: 0, rain: 0, snow: 0 };
   var holdNight = null;
+  var rainAcc = 0, drops = new Float32Array(96).fill(0), dropT = new Float32Array(32).fill(-9), dropN = 0;
   try { var saved = JSON.parse(localStorage.getItem('tarn-weather') || 'null'); if (saved && saved.time && saved.sky) wx = saved; } catch (e) {}
   function syncEnv() {
     document.querySelectorAll('#env button').forEach(function (b) { b.setAttribute('aria-pressed', wx[b.dataset.k] === b.dataset.v ? 'true' : 'false'); });
@@ -961,7 +980,7 @@ void main() {
       var buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
       gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
       var loc = gl.getAttribLocation(prog, 'p'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-      ['uRes', 'uTime', 'uCamPos', 'uCamF', 'uCamR', 'uCamU', 'uTanH', 'uSim', 'uSimHalf', 'uSimEnc', 'uSimHEnc', 'uSw', 'uSwA', 'uSun', 'uSunW', 'uMoon', 'uSunCol', 'uGlow', 'uLD', 'uLK', 'uNight', 'uOver', 'uRain', 'uSnow',
+      ['uRes', 'uTime', 'uCamPos', 'uCamF', 'uCamR', 'uCamU', 'uTanH', 'uSim', 'uSimHalf', 'uSimEnc', 'uSimHEnc', 'uSw', 'uSwA', 'uSun', 'uSunW', 'uMoon', 'uSunCol', 'uGlow', 'uDrops', 'uLD', 'uLK', 'uNight', 'uOver', 'uRain', 'uSnow',
        'uFC', 'uFR', 'uFN', 'uFV', 'uFHalf', 'uFTh', 'uFRound', 'uFBR', 'uFA', 'uFHover', 'uFLens', 'uLabel', 'uImpact', 'uPC', 'uPR', 'uPU', 'uPHalf', 'uPA', 'uPD']
         .forEach(function (n) { U[n] = gl.getUniformLocation(prog, n); });
       var makeTex = function (unit, px) {
@@ -1042,9 +1061,16 @@ void main() {
     if (holdNight !== null) envNow.night = holdNight;
     envNow.rain += ((wx.sky === 'rain' ? 1 : 0) - envNow.rain) * ek;
     envNow.snow += ((wx.sky === 'snow' ? 1 : 0) - envNow.snow) * ek;
-    if (envNow.rain > 0.05) { // drops landing on the sea
-      var nd = Math.round(envNow.rain * 5 * Math.min(2, dt * 60));
-      for (var di = 0; di < nd; di++) disturb((Math.random() - 0.5) * 14, (Math.random() - 0.5) * 14, 0.01 + Math.random() * 0.014, 1.1);
+    if (envNow.rain > 0.05 && state === 'surface') { // drops landing on the sea, wherever the camera is looking, each leaving a ring
+      rainAcc += Math.min(dt, 0.1) * 16 * envNow.rain;
+      var RS = size(), guard = 0;
+      while (rainAcc >= 1 && guard++ < 12) {
+        rainAcc -= 1;
+        for (var tries = 0; tries < 5; tries++) {
+          var hit = rayToSea(Math.random() * RS.W, (0.12 + 0.88 * Math.pow(Math.random(), 0.7)) * RS.H);
+          if (hit && Math.abs(hit[0]) < 7.4 && Math.abs(hit[2]) < 7.4) { disturb(hit[0], hit[2], 0.018 + Math.random() * 0.02, 2.0); drops[dropN * 3] = hit[0]; drops[dropN * 3 + 1] = hit[2]; dropT[dropN] = clock; dropN = (dropN + 1) % 32; break; }
+        }
+      }
     }
     resize();
     if (dirty) { dirty = false; measure(); paintLabel(); if (start && state !== 'surface') { var e = poseAt(TOTAL); placePaper({ pos: e.camPos, at: e.camAt }); } }
@@ -1062,6 +1088,8 @@ void main() {
       gl.uniform1f(U.uTanH, cam.tanH);
       gl.uniform1i(U.uSim, 0); gl.uniform1f(U.uSimHalf, HALF); gl.uniform1f(U.uSimEnc, SIM_ENC); gl.uniform1f(U.uSimHEnc, SIM_HENC);
       gl.uniform4fv(U.uSw, swU); gl.uniform1fv(U.uSwA, swA);
+      for (var di = 0; di < 32; di++) drops[di * 3 + 2] = clock - dropT[di];
+      gl.uniform3fv(U.uDrops, drops);
       var sk = sky(envNow.night);
       gl.uniform3fv(U.uSun, sk.sun); gl.uniform3fv(U.uMoon, sk.moon); gl.uniform3fv(U.uSunCol, sk.col); gl.uniform1f(U.uGlow, sk.glow);
       gl.uniform3fv(U.uSunW, bentIn(sk.light > 0.5 ? sk.moon : (sk.sun[1] > 0.02 ? sk.sun : SUN)));
