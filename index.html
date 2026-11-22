@@ -1,0 +1,1095 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#031426">
+<meta name="description" content="Tarn: a 3D deep-blue sea with a liquid-glass button. Press it and sink with it to an underwater page.">
+<title>Tarn</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,300;12..96,400;12..96,500&family=Inter:wght@400;500;600&display=swap">
+<style>
+/* Layout: one screen. A rendered 3D deep-blue sea (WebGL) with a chrome-and-glass floater on it; drag to orbit it.
+   Press it and you are the stone: you drop onto it, it is shoved under, and you ride it down into the deep. Down
+   there a sheet of paper hangs in the water, sunlight rippling across it, with the hero printed on it; the floater
+   becomes its "Reserve a weekend" button. Single look by choice (the sea), so no light variant. */
+:root {
+  --ink: #0b2236;          /* ink on the paper */
+  --ink-soft: #2f4c62;
+  --paper: #f4f1ea;
+  --mist: rgba(222, 238, 250, .8);
+  --font-display: "Bricolage Grotesque", "Avenir Next", "Helvetica Neue", system-ui, sans-serif;
+  --font-ui: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0; overflow: hidden; cursor: grab; touch-action: none;
+  background: #031426; color: #eef5fb;
+  font: 400 1rem/1.5 var(--font-ui);
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+}
+body.is-orbiting { cursor: grabbing; }
+body.is-diving, body.is-under { cursor: default; }
+.sea { position: fixed; inset: 0; z-index: 0; background: radial-gradient(90% 80% at 55% 35%, #0c3a62 0%, #052240 55%, #020d1c 100%); }
+.sea canvas { display: block; width: 100%; height: 100%; opacity: 0; transition: opacity 1.2s ease; }
+.sea.is-live canvas { opacity: 1; }
+.vignette { position: fixed; inset: 0; z-index: 1; pointer-events: none; background: radial-gradient(125% 105% at 50% 48%, transparent 58%, rgba(1, 8, 18, .45) 100%); }
+.wordmark {
+  position: fixed; z-index: 4; top: 0; left: 0;
+  padding: calc(env(safe-area-inset-top, 0px) + 1.75rem) 0 0 max(16px, env(safe-area-inset-left, 0px));
+  font: 500 1.125rem/1 var(--font-display); letter-spacing: .02em;
+  text-shadow: 0 1px 14px rgba(0, 20, 40, .5);
+}
+.hint {
+  position: fixed; z-index: 3; left: 50%; transform: translateX(-50%);
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 2.25rem);
+  margin: 0; font-size: .75rem; letter-spacing: .22em; text-transform: uppercase; color: var(--mist);
+  text-shadow: 0 1px 12px rgba(0, 20, 40, .7); pointer-events: none; white-space: nowrap;
+  transition: opacity .8s ease;
+}
+.hint.is-gone, .is-diving .hint { opacity: 0; }
+@media (min-width: 640px) { .wordmark { padding-left: max(2rem, env(safe-area-inset-left, 0px)); } }
+
+.env {
+  position: fixed; z-index: 5; top: 0; right: 0;
+  padding: calc(env(safe-area-inset-top, 0px) + 1.25rem) max(16px, env(safe-area-inset-right, 0px)) 0 0;
+  display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .5rem; cursor: default;
+}
+.seg {
+  display: flex; gap: 2px; padding: 3px; border-radius: 999px;
+  background: rgba(7, 20, 36, .42); border: 1px solid rgba(230, 240, 250, .3);
+  -webkit-backdrop-filter: blur(14px) saturate(1.4); backdrop-filter: blur(14px) saturate(1.4);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .25), 0 6px 20px -8px rgba(0, 10, 25, .5);
+}
+.seg button {
+  appearance: none; border: 0; cursor: pointer; display: inline-flex; align-items: center; gap: .4rem;
+  min-height: 2rem; padding: 0 .8rem; border-radius: 999px; background: transparent;
+  font: 500 .8125rem/1 var(--font-ui); letter-spacing: .01em; color: rgba(238, 245, 251, .78);
+  transition: background-color .3s ease, color .3s ease;
+}
+.seg button svg { width: 14px; height: 14px; flex: none; }
+.seg button:hover { color: #fff; }
+.seg button[aria-pressed="true"] { background: rgba(245, 248, 252, .92); color: #10202e; box-shadow: 0 1px 4px rgba(0, 10, 25, .25); }
+.seg button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+@media (min-width: 640px) { .env { padding-right: max(2rem, env(safe-area-inset-right, 0px)); } }
+@media (max-width: 520px) { .env { flex-direction: column; align-items: flex-end; } .seg button { padding: 0 .65rem; } .seg button span { display: none; } .seg button svg { width: 16px; height: 16px; } }
+
+/* The button: the floater itself is drawn in the 3D scene; this element is mapped onto its top face so it can be
+   clicked and focused, and at the end it becomes the paper's "Reserve a weekend" button. */
+.begin {
+  position: fixed; left: 0; top: 0; z-index: 3;
+  width: 194px; height: 48px; transform-origin: 0 0;
+  appearance: none; cursor: pointer; padding: 0; border: 0; border-radius: 999px; background: none; color: transparent;
+  will-change: transform;
+}
+.begin > span { position: absolute; inset: 0; border-radius: 999px; }
+.pill { background: var(--ink); opacity: 0; }
+.lab { display: grid; place-items: center; white-space: nowrap; pointer-events: none; }
+.lab--b { font: 500 .9375rem/1 var(--font-ui); letter-spacing: .01em; color: var(--paper); opacity: 0; }
+.begin:focus-visible { outline: 2px solid #eef5fb; outline-offset: 6px; }
+
+/* ---------- The hero: printed on a sheet of paper hanging in the deep. The script maps it onto the paper's 3D
+   position (matrix3d); the water and the light on the paper are drawn behind it by the scene. ---------- */
+.sheet {
+  position: fixed; left: 0; top: 0; z-index: 2; transform-origin: 0 0;
+  width: min(60rem, calc(100vw - 2rem));
+  padding: clamp(1.75rem, 5vw, 3.75rem) clamp(1.5rem, 5vw, 3.75rem) clamp(1.5rem, 4vw, 3rem);
+  display: grid; gap: clamp(1.75rem, 4vw, 3rem);
+  color: var(--ink); opacity: 0; pointer-events: none;
+  will-change: transform, opacity;
+}
+.is-under .sheet { pointer-events: auto; }
+.eyebrow { margin: 0 0 1rem; font-size: .75rem; font-weight: 600; letter-spacing: .18em; text-transform: uppercase; color: var(--ink-soft); }
+.sheet h1 {
+  margin: 0; max-width: 12ch; outline: none;
+  font: 300 clamp(2.9rem, 7.2vw, 5.75rem)/.95 var(--font-display);
+  letter-spacing: -.035em; color: var(--ink);
+}
+.lede { margin: 1.25rem 0 0; max-width: 42ch; font-size: clamp(1rem, 1.4vw, 1.125rem); color: var(--ink-soft); }
+.actions { display: flex; flex-wrap: wrap; gap: .75rem; margin-top: 1.75rem; }
+.btn {
+  appearance: none; cursor: pointer; display: inline-flex; align-items: center; min-height: 3rem;
+  padding: 0 1.6rem; border-radius: 999px; text-decoration: none;
+  font: 500 .9375rem/1 var(--font-ui); letter-spacing: .01em;
+  transition: transform .3s cubic-bezier(.2, .8, .2, 1), background-color .3s, border-color .3s;
+}
+.btn--solid { border: 0; background: var(--ink); color: var(--paper); }
+.btn--solid:hover { transform: translateY(-1px); background: #12324d; }
+.btn--line { border: 1px solid rgba(11, 34, 54, .35); background: transparent; color: var(--ink); }
+.btn--line:hover { border-color: var(--ink); }
+.btn:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
+.facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1.5rem; margin: 0; padding: 1.1rem 0 0; border-top: 1px solid rgba(11, 34, 54, .2); }
+.facts dt { font-size: .6875rem; font-weight: 600; letter-spacing: .16em; text-transform: uppercase; color: var(--ink-soft); }
+.facts dd { margin: .3rem 0 0; font: 400 clamp(1.1rem, 2.2vw, 1.6rem)/1.15 var(--font-display); font-variant-numeric: tabular-nums; letter-spacing: -.01em; color: var(--ink); }
+@media (max-width: 560px) {
+  .facts { grid-template-columns: 1fr; gap: .75rem; }
+  .facts div { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; }
+  .facts dd { margin: 0; }
+}
+</style>
+</head>
+<body>
+<div class="sea" id="sea" aria-hidden="true"><canvas id="gl"></canvas></div>
+<div class="vignette" aria-hidden="true"></div>
+<div class="wordmark">Tarn</div>
+
+<section class="sheet" id="sheet" aria-labelledby="hero-title" inert>
+  <div>
+    <p class="eyebrow">Open-water swim retreat</p>
+    <h1 id="hero-title" tabindex="-1">Get in.<br>Stay a&nbsp;while.</h1>
+    <p class="lede">Guided swims at dawn, a wood-fired sauna on the shore and eleven quiet rooms above a mountain lake.</p>
+    <div class="actions">
+      <a class="btn btn--solid" href="#hero" id="reserve">Reserve a weekend</a>
+      <a class="btn btn--line" href="#start" id="surface">Back to the surface</a>
+    </div>
+  </div>
+  <dl class="facts">
+    <div><dt>Water</dt><dd>11&deg;C in March</dd></div>
+    <div><dt>Dawn swim</dt><dd>06:30 daily</dd></div>
+    <div><dt>Guests</dt><dd>14 at most</dd></div>
+  </dl>
+</section>
+
+<button class="begin" id="begin" type="button" aria-label="Take me in">
+  <span class="pill" id="pill"></span><span class="lab lab--b" id="labB" aria-hidden="true">Reserve a weekend</span>
+</button>
+
+<div class="env" id="env">
+  <div class="seg" role="group" aria-label="Time of day">
+    <button type="button" data-k="time" data-v="day" aria-pressed="true" aria-label="Day"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><span>Day</span></button>
+    <button type="button" data-k="time" data-v="night" aria-pressed="false" aria-label="Night"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg><span>Night</span></button>
+  </div>
+  <div class="seg" role="group" aria-label="Weather">
+    <button type="button" data-k="sky" data-v="clear" aria-pressed="true" aria-label="Clear"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 12h3M18 12h3M12 3v3M12 18v3"/><circle cx="12" cy="12" r="3"/></svg><span>Clear</span></button>
+    <button type="button" data-k="sky" data-v="rain" aria-pressed="false" aria-label="Rain"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 15a4.5 4.5 0 1 1 1.2-8.8A5.5 5.5 0 0 1 18.5 9 3.5 3.5 0 0 1 17 15.5"/><path d="M9 18l-1 2.5M13 18l-1 2.5M17 18l-1 2.5"/></svg><span>Rain</span></button>
+    <button type="button" data-k="sky" data-v="snow" aria-pressed="false" aria-label="Snow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3v18M4.2 7.5l15.6 9M4.2 16.5l15.6-9M9.5 4.5 12 6l2.5-1.5M9.5 19.5 12 18l2.5 1.5"/></svg><span>Snow</span></button>
+  </div>
+</div>
+
+<p class="hint" id="hint">Drag to look around &middot; Tap the water</p>
+
+<script id="vs" type="x-shader/x-vertex">
+attribute vec2 p;
+void main() { gl_Position = vec4(p, 0.0, 1.0); }
+</script>
+
+<script id="fs" type="x-shader/x-fragment">
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
+precision mediump float;
+#endif
+uniform vec2 uRes;
+uniform float uTime;
+uniform vec3 uCamPos, uCamF, uCamR, uCamU;
+uniform float uTanH;
+uniform sampler2D uSim;
+uniform float uSimHalf, uSimEnc, uSimHEnc;
+uniform vec4 uSw[5];
+uniform float uSwA[5];
+uniform vec3 uSun, uSunW, uMoon, uLD, uSunCol;   // uSunCol: the sun's colour, warmer as it nears the horizon
+uniform float uGlow;   // how much the sky glows with sunset or sunrise
+// sun, its light under water, the moon, and whichever lights the scene
+uniform float uLK, uNight, uOver, uRain, uSnow;   // light strength, night, overcast, rain, snow
+uniform vec3 uFC, uFR, uFN, uFV;          // the floater: centre and axes
+uniform vec2 uFHalf;
+uniform float uFTh, uFRound, uFBR, uFA, uFHover, uFLens;
+uniform sampler2D uLabel;
+uniform vec4 uImpact;
+uniform vec3 uPC, uPR, uPU;               // the paper: centre, right and up
+uniform vec2 uPHalf;
+uniform float uPA, uPD;                   // how present it is, and the distance you will read it from
+
+float hash(vec2 p) { p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
+float noise(vec2 p) {
+  vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash(i), hash(i + vec2(1, 0)), f.x), mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), f.x), f.y);
+}
+float fbm(vec2 p) { float s = 0.0, a = 0.5; for (int i = 0; i < 4; i++) { s += a * noise(p); p = mat2(1.6, 1.2, -1.2, 1.6) * p; a *= 0.5; } return s; }
+
+float swellH(vec2 p) { float h = 0.0; for (int i = 0; i < 5; i++) { vec4 s = uSw[i]; h += uSwA[i] * sin(s.z * dot(s.xy, p) - s.w * uTime); } return h; }
+vec2 swellG(vec2 p) { vec2 g = vec2(0.0); for (int i = 0; i < 5; i++) { vec4 s = uSw[i]; g += s.xy * (uSwA[i] * s.z * cos(s.z * dot(s.xy, p) - s.w * uTime)); } return g; }
+vec2 detailG(vec2 p, float fp) {
+  vec2 g = vec2(0.0); float k = 4.0;
+  for (int i = 0; i < 8; i++) {
+    float fi = float(i), ang = fi * 2.39996 + 0.7;
+    vec2 d = vec2(cos(ang), sin(ang));
+    float w = sqrt(3.0 * k + 0.0016 * k * k * k);
+    g += d * (0.021 * cos(k * dot(d, p) - w * uTime + fi * 1.9) * clamp(1.4 - k * fp * 3.0, 0.0, 1.0));
+    k *= 1.38;
+  }
+  return g;
+}
+vec3 simS(vec2 p) {
+  vec2 u = (p + uSimHalf) / (2.0 * uSimHalf);
+  if (u.x < 0.0 || u.y < 0.0 || u.x > 1.0 || u.y > 1.0) return vec3(0.0);
+  vec4 t = texture2D(uSim, u);
+  return vec3((t.r - 0.5) * 2.0 / uSimEnc, (t.g - 0.5) * 2.0 / uSimEnc, (t.b - 0.5) * 2.0 / uSimHEnc);
+}
+float waterH(vec2 p) { return swellH(p) + simS(p).z; }
+
+vec3 skyB(vec3 d, float sunDisc) {
+  float h = max(d.y, 0.0), ov = uOver, dayK = 1.0 - uNight, clearK = 1.0 - ov;
+  vec3 dayC = mix(vec3(0.42, 0.55, 0.70), vec3(0.04, 0.13, 0.36), pow(h, 0.42));
+  vec3 grey = mix(vec3(0.5, 0.53, 0.57), vec3(0.3, 0.33, 0.38), pow(h, 0.6));
+  vec3 nightC = mix(vec3(0.02, 0.035, 0.065), vec3(0.003, 0.007, 0.02), pow(h, 0.5));
+  vec3 nightGrey = mix(vec3(0.03, 0.035, 0.045), vec3(0.012, 0.014, 0.02), pow(h, 0.6));
+  vec3 c = mix(mix(dayC, grey, ov), mix(nightC, nightGrey, ov), uNight);
+  float s = max(dot(d, uSun), 0.0), m = max(dot(d, uMoon), 0.0);
+  float sunUp = smoothstep(-0.06, 0.03, uSun.y), moonUp = smoothstep(-0.06, 0.03, uMoon.y);
+  c += uSunCol * pow(s, 8.0) * 0.18 * dayK * clearK * sunUp;
+  // sunset and sunrise: the sky along the horizon burns orange and rose, strongest toward the sun
+  vec2 hd = normalize(d.xz + 1e-5), hs2 = normalize(uSun.xz + 1e-5);
+  float toward = 0.35 + 0.65 * pow(max(dot(hd, hs2), 0.0), 2.0);
+  c *= mix(1.0, 0.28, uGlow * (1.0 - ov * 0.5));                        // the sky deepens as the sun goes low
+  if (uNight > 0.01 && d.y > 0.0) {   // stars
+    vec2 g = vec2(atan(d.x, -d.z), asin(d.y)) * 70.0, id = floor(g), f = fract(g) - 0.5;
+    float hs = hash(id); vec2 o = (vec2(hash(id + 1.3), hash(id + 2.7)) - 0.5) * 0.6;
+    c += vec3(0.8, 0.85, 1.0) * smoothstep(0.09, 0.0, length(f - o)) * step(0.982, hs) * (0.6 + 0.4 * sin(uTime * 2.0 + hs * 40.0)) * uNight * clearK * smoothstep(0.02, 0.25, d.y) * 1.3;
+  }
+  vec2 cp = d.xz / (d.y + 0.06) * 0.55 + vec2(uTime * 0.012, uTime * 0.004) * (1.0 + ov * 1.5);
+  float lo = mix(0.5, 0.26, ov), hi = mix(0.84, 0.64, ov);
+  float dens = smoothstep(lo, hi, fbm(cp)), lit = smoothstep(lo, hi, fbm(cp + uSun.xz * 0.12));
+  vec3 cDay = mix(vec3(0.98, 0.97, 0.95), vec3(0.52, 0.6, 0.72), clamp((lit - dens) * 2.5 + 0.35, 0.0, 1.0));
+  cDay = mix(cDay, vec3(0.6, 0.62, 0.66) * (0.78 + 0.22 * (1.0 - dens)), ov);
+  vec3 cNight = mix(vec3(0.05, 0.06, 0.08), vec3(0.11, 0.12, 0.15), 1.0 - dens) + vec3(0.25, 0.28, 0.35) * pow(m, 10.0) * 0.4;
+  vec3 cloud = mix(cDay, cNight, uNight) + uSunCol * pow(s, 14.0) * 0.7 * (1.0 - dens) * dayK * clearK * sunUp;
+  cloud = mix(cloud, cloud * 0.35 + vec3(1.0, 0.4, 0.18) * (0.5 + 0.5 * lit) * 0.9, uGlow * toward * (1.0 - ov * 0.6));   // clouds lit from below by the low sun
+  c = mix(c, cloud, dens * mix(0.8, 0.95, ov) * smoothstep(0.0, 0.12, d.y));
+  vec3 haze = mix(mix(vec3(0.6, 0.7, 0.8), vec3(0.55, 0.58, 0.62), ov), vec3(0.035, 0.05, 0.08), uNight);
+  c = mix(c, haze * mix(1.0, 0.3, uGlow), exp(-max(d.y, 0.0) * 18.0) * mix(0.38, 0.7, ov) * (1.0 - 0.6 * uGlow));
+  // sunset and sunrise: the horizon burns orange and rose, strongest toward the sun, fading up into violet
+  float gk = uGlow * (1.0 - ov * 0.7);
+  c += (vec3(1.0, 0.3, 0.05) * exp(-max(d.y, 0.0) * 8.0) * 2.4 + vec3(1.0, 0.45, 0.22) * exp(-max(d.y, 0.0) * 3.0) * 0.8 * toward
+      + vec3(0.36, 0.16, 0.4) * exp(-max(d.y, 0.0) * 1.2) * 0.35) * gk * toward;
+  c += uSunCol * mix(1.0, 0.3, uGlow) * (pow(s, 2600.0) * 40.0 * sunDisc + pow(s, 300.0) * 1.2 * sunDisc + pow(s, 40.0) * 0.35 * (0.3 + 0.7 * sunDisc)) * (1.0 - ov * 0.92) * sunUp * step(0.0, d.y);
+  c += vec3(0.85, 0.9, 1.0) * (smoothstep(0.99975, 0.9999, m) * 3.0 * sunDisc + pow(m, 400.0) * 0.4 * sunDisc + pow(m, 30.0) * 0.08) * (1.0 - ov * 0.85) * moonUp * step(0.0, d.y);
+  return c;
+}
+// gulls crossing the sky, wings beating, drawn in the directions they sit in (so they stay put as you orbit)
+float birds(vec3 d) {
+  if (d.y < 0.01) return 0.0;
+  if (uNight > 0.9 || uOver > 0.9) return 0.0;
+  vec2 sp = vec2(atan(d.x, -d.z), asin(d.y));
+  float b = 0.0;
+  for (int i = 0; i < 6; i++) {
+    float fi = float(i), h1 = hash(vec2(fi, 11.0)), h2 = hash(vec2(fi, 13.0));
+    float speed = (0.018 + 0.02 * h1) * (h2 > 0.5 ? 1.0 : -1.0);
+    vec2 bp = vec2(mod(h1 * 6.2832 + uTime * speed + 3.1416, 6.2832) - 3.1416, 0.06 + 0.2 * h2 + 0.01 * sin(uTime * 0.7 + fi));
+    vec2 q = sp - bp; q.x = mod(q.x + 3.1416, 6.2832) - 3.1416;
+    float sz = 0.016 + 0.01 * hash(vec2(fi, 17.0));
+    q /= sz; q.x *= sign(speed);
+    if (abs(q.x) > 1.3 || abs(q.y) > 1.3) continue;
+    float flap = sin(uTime * (7.0 + 3.0 * h1) + fi * 2.0);
+    float ax = abs(q.x);
+    float wing = flap * 0.55 * ax - 0.35 * ax * ax + 0.1;
+    float th = 0.11 * (1.0 - ax) + 0.03;
+    b = max(b, smoothstep(th, th * 0.4, abs(q.y - wing)) * step(ax, 1.0));
+  }
+  return b * (1.0 - uNight) * (1.0 - uOver * 0.8);
+}
+float sdPill(vec2 p, vec2 hb) { float rr = hb.y; vec2 d = abs(p) - (hb - rr); return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - rr; }
+float sdBox(vec2 p, vec2 hb, float r) { vec2 d = abs(p) - (hb - r); return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - r; }
+vec3 deepColor(vec3 rd, float depth) {
+  vec3 c = mix(vec3(0.003, 0.02, 0.05), vec3(0.04, 0.2, 0.36), smoothstep(-0.8, 0.95, rd.y));
+  return c * exp(depth * 0.06) * mix(1.0, 0.25, uNight) * mix(1.0, 0.72, uOver);
+}
+// sunlight focused by the moving surface: a bright net of light that slides over anything underwater
+float caustic(vec3 x) {
+  vec2 e = x.xz - uSunW.xz * (x.y / uSunW.y);
+  vec2 t = vec2(uTime * 0.22, uTime * 0.15);
+  float n1 = noise(e * 2.4 + t), n2 = noise(e * 2.4 * 1.31 - t * 0.9 + 3.7);
+  float n3 = noise(e * 5.1 + t * 1.4 + 7.1), n4 = noise(e * 5.1 * 1.27 - t * 1.2 + 1.9);
+  return smoothstep(0.13, 0.0, abs(n1 - n2)) * 0.75 + smoothstep(0.09, 0.0, abs(n3 - n4)) * 0.4;
+}
+
+// ---------- the floater ----------
+vec3 toLocal(vec3 p) { vec3 q = p - uFC; return vec3(dot(q, uFR), dot(q, uFN), dot(q, uFV)); }
+float sdFloat(vec3 p) {
+  vec3 l = toLocal(p);
+  float d2 = sdPill(l.xz, uFHalf - uFRound);
+  vec2 w = vec2(d2, abs(l.y) - (uFTh - uFRound));
+  return min(max(w.x, w.y), 0.0) + length(max(w, 0.0)) - uFRound;
+}
+float marchFloat(vec3 ro, vec3 rd, float tmax) {
+  vec3 oc = ro - uFC; float b = dot(oc, rd), c = dot(oc, oc) - uFBR * uFBR, h = b * b - c;
+  if (h < 0.0) return -1.0;
+  h = sqrt(h);
+  float t = max(0.0, -b - h), t1 = min(-b + h, tmax);
+  for (int i = 0; i < 48; i++) {
+    float d = sdFloat(ro + rd * t);
+    if (d < 0.0012) return t;
+    t += d;
+    if (t > t1) break;
+  }
+  return -1.0;
+}
+vec3 floatNormal(vec3 p) {
+  vec2 e = vec2(0.0015, -0.0015);
+  return normalize(e.xyy * sdFloat(p + e.xyy) + e.yyx * sdFloat(p + e.yyx) + e.yxy * sdFloat(p + e.yxy) + e.xxx * sdFloat(p + e.xxx));
+}
+vec3 envMap(vec3 r) {
+  if (r.y > 0.0) return skyB(r, 1.0);
+  return mix(vec3(0.03, 0.1, 0.18), vec3(0.004, 0.018, 0.045), smoothstep(0.0, -0.6, r.y)) * mix(1.0, 0.25, uNight);
+}
+// what shows through the glass: the sea directly beneath it, seen along the bent ray
+vec3 seaBelow(vec3 p, vec3 rdIn) {
+  float wy = waterH(p.xz);
+  float t = (max(p.y - wy, 0.0) + 0.45) / max(-rdIn.y, 0.25);   // looked at through a thick lens, so the sea behind is visibly bent
+  vec3 q = p + rdIn * t;
+  vec2 g = swellG(q.xz) + simS(q.xz).xy;
+  vec3 n = normalize(vec3(-g.x, 1.0, -g.y));
+  float F = 0.02 + 0.98 * pow(1.0 - max(dot(n, -rdIn), 0.0), 5.0);
+  vec3 body = (vec3(0.004, 0.026, 0.07) + vec3(0.0, 0.03, 0.05) * (0.5 + 0.5 * g.x * 8.0)) * mix(1.0, 0.3, uNight) * mix(1.0, 0.78, uOver);
+  vec3 rf = reflect(rdIn, n); rf.y = abs(rf.y);
+  return mix(body, skyB(rf, 0.0), F) + vec3(0.02, 0.05, 0.08) * smoothstep(0.05, -0.1, g.y);
+}
+vec3 floatColor(vec3 p, vec3 rd, float under) {
+  vec3 n = floatNormal(p), l = toLocal(p);
+  float top = smoothstep(0.8, 0.96, dot(n, uFN));
+  vec3 rf = reflect(rd, n);
+  float fr = 0.04 + 0.96 * pow(1.0 - max(dot(n, -rd), 0.0), 4.0);
+  float lightK = mix(1.0, 0.32, uNight) * mix(1.0, 0.8, uOver);
+  // frosted glass: light scattered inside it, tinted by the sea it sits in, brighter toward the top and the far side
+  float ed = sdPill(l.xz, uFHalf);
+  float edge = smoothstep(-0.13, -0.008, ed);                       // 0 across the middle, 1 on the rounded rim
+  // clear glass: the sea seen straight through it, bent most at the rim, split slightly into colour there
+  float disp = 0.02 + 0.09 * edge;
+  vec3 seen = seaBelow(p, refract(rd, n, 1.0 / 1.5));
+  if (edge > 0.2) { seen.r = seaBelow(p, refract(rd, n, 1.0 / (1.5 - disp))).r; seen.b = seaBelow(p, refract(rd, n, 1.0 / (1.5 + disp))).b; }
+  vec3 c = seen * 1.15 + vec3(0.02, 0.03, 0.04) * lightK;
+  c = mix(c, vec3(0.86, 0.9, 0.95) * lightK, 0.08 + 0.05 * uFHover);        // only the faintest frost
+  c = mix(c, envMap(rf), fr * (0.3 + 0.55 * edge));                        // the curved rim mirrors sky and sea
+  float rimLine = exp(-pow((ed + 0.006) / 0.0045, 2.0));
+  c += vec3(1.0) * rimLine * (0.22 + 0.75 * smoothstep(-0.3, 0.8, l.z / uFHalf.y)) * lightK;   // a crisp bright edge, strongest along the far side
+  c += vec3(1.0, 0.98, 0.94) * pow(max(dot(rf, uLD), 0.0), 50.0) * edge * 1.1 * uLK;         // light running along the curve
+  c += vec3(1.0) * exp(-pow((l.z - uFHalf.y * 0.62) / 0.02, 2.0)) * smoothstep(-0.02, -0.09, ed) * 0.07 * lightK;  // a faint inner gleam
+  c *= 1.0 - 0.2 * edge * smoothstep(0.1, 1.0, -l.z / uFHalf.y);          // a soft inner shadow along the near edge
+  if (top > 0.01) {
+    float px = length(p - uCamPos) * uTanH * 2.0 / uRes.y;
+    vec2 lc = vec2(l.x - uFLens, l.z);
+    float lr = length(lc), R = uFHalf.y * 0.68;
+    // the dark round button: smooth, softly domed, with a hairline rim and a soft shadow cast on the glass beside it
+    vec3 nd = normalize(uFN + (uFR * lc.x + uFV * lc.y) / R * 0.45);
+    vec3 disc = mix(vec3(0.07, 0.074, 0.08), vec3(0.018, 0.02, 0.024), smoothstep(-R, R, lc.y)) + seen * 0.12 + envMap(reflect(rd, nd)) * (0.02 + 0.3 * pow(1.0 - max(dot(nd, -rd), 0.0), 3.0)) * lightK;
+    float inD = smoothstep(R, R - max(px, 0.003), lr);
+    c *= 1.0 - 0.18 * smoothstep(R + 0.06, R, lr) * (1.0 - inD) * top;
+    c = mix(c, disc, inD * top);
+    c += vec3(1.0) * exp(-pow((lr - R + 0.004) / 0.004, 2.0)) * (0.22 + 0.12 * uFHover) * top * lightK;
+    // the words and the diver, printed on it
+    vec2 uvL = vec2(l.x / uFHalf.x * 0.5 + 0.5, l.z / uFHalf.y * 0.5 + 0.5);
+    vec4 lab = texture2D(uLabel, uvL);
+    c = c * (1.0 - lab.a * top) + lab.rgb * top * (0.55 + 0.45 * lightK);
+  }
+  c += vec3(1.0, 0.96, 0.88) * pow(max(dot(rf, uLD), 0.0), 220.0) * 2.2 * uLK;
+  return c * exp(-under * vec3(1.0, 0.38, 0.2));
+}
+
+vec3 aboveWater(vec3 ro, vec3 rd) {
+  ro.y = max(ro.y, 0.02);
+  float tF = marchFloat(ro, rd, 60.0);
+  if (tF > 0.0) {
+    vec3 pf = ro + rd * tF;
+    if (pf.y > waterH(pf.xz)) return floatColor(pf, rd, 0.0) * (1.0 - 0.12 * smoothstep(0.04, 0.0, pf.y - waterH(pf.xz)));
+  }
+  if (rd.y > -0.0005) return mix(skyB(rd, 1.0), vec3(0.07, 0.09, 0.13), birds(rd));
+  float t = -ro.y / rd.y;
+  vec3 p = ro + rd * t;
+  float fp = t * uTanH * 2.0 / uRes.y;
+  vec3 sm = simS(p.xz);
+  vec2 g = swellG(p.xz) + detailG(p.xz, fp) + sm.xy;
+  float hgt = swellH(p.xz) + sm.z;
+  p.y = hgt;
+  vec3 n = normalize(vec3(-g.x, 1.0, -g.y));
+  float cosi = max(dot(n, -rd), 0.0);
+  float F = 0.02 + 0.98 * pow(1.0 - cosi, 5.0);
+  vec3 sunFlat = normalize(vec3(uSun.x, 0.0, uSun.z) + 1e-4);
+  float sss = clamp(hgt * 5.0 + 0.35, 0.0, 1.0) * (0.55 + 0.45 * dot(sunFlat, -rd));
+  vec3 body = (vec3(0.002, 0.014, 0.045) + vec3(0.0, 0.05, 0.085) * sss + vec3(0.0, 0.015, 0.03) * max(dot(n, uSun), 0.0)) * mix(1.0, 0.3, uNight) * mix(1.0, 0.78, uOver);
+  float a = uImpact.z, S = uImpact.w;
+  vec3 tr = refract(rd, n, 1.0 / 1.333);
+  float tb = marchFloat(p, tr, 9.0);
+  if (tb > 0.0) {
+    vec3 pf = p + tr * tb;
+    vec3 fc = floatColor(pf, tr, max(0.0, -pf.y));
+    vec3 tt = exp(-tb * vec3(1.6, 0.55, 0.3));
+    vec3 seen = fc * tt + body * (1.0 - tt);
+    if (a >= 0.0) seen = mix(seen, vec3(0.75, 0.86, 0.92), exp(-tb / 0.1) * exp(-a * 1.3) * 0.75 * S * smoothstep(0.35, 0.7, fbm(p.xz * 9.0 + a)));
+    body = mix(body, seen, uFA);
+  }
+  vec3 rf = reflect(rd, n); rf.y = abs(rf.y);
+  vec3 refl = skyB(rf, 0.0);
+  float tr2 = marchFloat(p + n * 0.01, rf, 4.0);
+  if (tr2 > 0.0) refl = mix(refl, floatColor(p + rf * tr2, rf, 0.0) * 0.9, uFA);
+  vec3 col = mix(body, refl, F);
+  vec3 hv = normalize(uLD - rd);
+  float nh = max(dot(n, hv), 0.0), zone = pow(nh, 140.0) * uLK;
+  vec2 sc = p.xz * 30.0, cid = floor(sc), cf = fract(sc) - 0.5;
+  vec2 off = vec2(hash(cid + 3.1), hash(cid + 7.7)) - 0.5;
+  float spark = smoothstep(0.13, 0.0, length(cf - off * 0.6)) * step(0.972, hash(cid + floor(uTime * 6.0) * 1.37)) * smoothstep(0.0012, 0.004, fp);
+  col += mix(uSunCol, vec3(0.8, 0.86, 1.0), uNight) * (zone * spark * 16.0 + zone * 0.05);
+  float dF = sdFloat(p);
+  if (dF < 0.4) {
+    col *= 1.0 - 0.18 * exp(-max(dF, 0.0) / 0.035) * uFA;
+  }
+  if (a >= 0.0) {
+    float tear = smoothstep(0.42, 0.78, fbm(p.xz * 13.0 + vec2(a * 0.9, -a * 0.6)));
+    float lace = smoothstep(0.5, 0.8, fbm(p.xz * 28.0 - a * 1.3));
+    float surge = exp(-max(dF, 0.0) / (0.05 + 0.3 * a)) * exp(-a * 1.4);
+    float ring = exp(-pow((dF - (0.04 + 1.1 * pow(a, 0.6))) / (0.03 + 0.05 * a), 2.0)) * exp(-a * 3.0);
+    col = mix(col, vec3(0.8, 0.89, 0.95), clamp(surge * (0.25 + 0.75 * tear) + ring * tear * 0.8 + surge * lace * 0.3, 0.0, 1.0) * S);
+  }
+  return mix(col, mix(mix(vec3(0.5, 0.6, 0.72), vec3(0.5, 0.53, 0.57), uOver), vec3(0.03, 0.045, 0.07), uNight), 1.0 - exp(-t * mix(0.012, 0.02, uOver)));
+}
+
+vec3 underWater(vec3 ro, vec3 rd) {
+  ro.y = min(ro.y, -0.02);
+  vec3 fogc = deepColor(rd, ro.y), col = fogc;
+  if (rd.y > 0.0) {
+    float t = -ro.y / rd.y;
+    vec3 p = ro + rd * t;
+    float fp = t * uTanH * 2.0 / uRes.y;
+    vec2 g = swellG(p.xz) + detailG(p.xz, fp) + simS(p.xz).xy;
+    vec3 n = normalize(vec3(-g.x, 1.0, -g.y));
+    vec3 tr = refract(rd, -n, 1.333), s;
+    if (dot(tr, tr) < 0.01) s = deepColor(reflect(rd, -n), ro.y) * 0.9;
+    else { s = skyB(tr, 1.0) * 0.85; float sp = max(dot(tr, uLD), 0.0); s += vec3(1.0, 0.95, 0.85) * (pow(sp, 260.0) * 5.0 + pow(sp, 10.0) * 0.25) * uLK; }
+    col = mix(fogc, s * vec3(0.5, 0.82, 1.0), exp(-t * 0.17));
+  } else {
+    // the sea floor far below: rippled sand under a net of light, half lost in the blue
+    float t = (-11.0 - ro.y) / rd.y;
+    if (t > 0.0) {
+      vec3 p = ro + rd * t;
+      float rip = 0.5 + 0.5 * sin(p.x * 5.0 + fbm(p.xz * 0.6) * 6.0);
+      float rock = smoothstep(0.55, 0.8, fbm(p.xz * 0.35 + 4.0));
+      vec3 sand = vec3(0.32, 0.36, 0.34) * (0.75 + 0.25 * rip) * (1.0 - 0.6 * rock) * (0.6 + 0.9 * caustic(p) * uLK) * mix(1.0, 0.3, uNight);
+      col = mix(fogc, sand * vec3(0.35, 0.65, 0.8), exp(-t * 0.16));
+    }
+  }
+  // shafts of sunlight
+  float shafts = 0.0;
+  for (int i = 0; i < 8; i++) {
+    float d = 0.8 + float(i) * 1.5;
+    vec3 x = ro + rd * d;
+    if (x.y > 0.0) break;
+    vec2 e = x.xz - uSunW.xz * (x.y / uSunW.y);
+    float c1 = noise(e * 1.2 + vec2(uTime * 0.1, uTime * 0.06)), c2 = noise(e * 2.6 - vec2(uTime * 0.08, -uTime * 0.05));
+    shafts += pow(smoothstep(0.42, 1.0, c1 * 0.62 + c2 * 0.38), 3.0) * exp(x.y * 0.16) * exp(-d * 0.1);
+  }
+  col += vec3(0.25, 0.55, 0.78) * shafts * 0.42 * (1.0 - 0.8 * uNight) * (1.0 - 0.6 * uOver);
+
+  // the paper hanging in the water: wet, soft at the edges, with the light netting across it
+  float tP = 1e9;
+  if (uPA > 0.001) {
+    vec3 nP = normalize(cross(uPR, uPU));
+    float den = dot(rd, nP);
+    if (abs(den) > 1e-4) {
+      float t = dot(uPC - ro, nP) / den;
+      if (t > 0.0) {
+        vec3 x = ro + rd * t, q = x - uPC;
+        vec2 lc = vec2(dot(q, uPR), dot(q, uPU));
+        float sd = sdBox(lc, uPHalf, 0.035);
+        float px = t * uTanH * 2.0 / uRes.y;
+        float inside = smoothstep(px, -px, sd);
+        if (inside > 0.0) {
+          tP = t;
+          vec2 uvP = lc / uPHalf;
+          vec3 paper = vec3(0.86, 0.84, 0.79) * (0.95 + 0.05 * noise(lc * 90.0)) * (0.93 + 0.07 * noise(lc * 7.0 + 3.0));
+          float light = (0.62 + 0.22 * smoothstep(-1.0, 1.0, uvP.y)) * mix(1.0, 0.7, uNight) + 0.55 * caustic(x) * uLK;
+          vec3 pc = paper * light * mix(vec3(0.8, 0.92, 1.0), vec3(0.7, 0.8, 0.95), uNight);
+          pc *= 1.0 - 0.22 * smoothstep(-0.12, 0.0, sd);                         // damp, darker edges
+          pc *= 1.0 - 0.08 * smoothstep(0.4, 1.0, uvP.x) * smoothstep(0.2, 1.0, -uvP.y); // a soft curl at one corner
+          float far = 1.0 - exp(-max(t - uPD * 0.92, 0.0) * 0.24);
+          col = mix(col, mix(pc, fogc, far), inside * uPA);
+        }
+      }
+    }
+  }
+  // bubbles rising past
+  for (int i = 0; i < 14; i++) {
+    float fi = float(i);
+    vec2 base = (vec2(hash(vec2(fi, 1.0)), hash(vec2(fi, 2.0))) - 0.5) * vec2(10.0, 8.0) + uPC.xz;
+    float sp = 0.45 + 0.55 * hash(vec2(fi, 3.0));
+    float y = uPC.y - 5.0 + mod(uTime * sp + hash(vec2(fi, 4.0)) * 9.0, 9.0);
+    vec3 bp = vec3(base.x + sin(uTime * 2.2 + fi) * 0.06, y, base.y + cos(uTime * 1.7 + fi) * 0.05);
+    vec3 w = bp - ro; float tt = dot(w, rd);
+    if (tt < 0.3 || tt > tP) continue;
+    float dist = length(w - rd * tt), r = 0.025 + 0.035 * hash(vec2(fi, 5.0));
+    float rim = smoothstep(r, r * 0.8, dist) - smoothstep(r * 0.78, r * 0.45, dist) * 0.85;
+    float hi = smoothstep(r * 0.35, 0.0, length(w - rd * tt + (uCamU - uCamR) * r * 0.35));
+    col += vec3(0.75, 0.9, 1.0) * (rim * 0.5 + hi * 0.7) * exp(-tt * 0.12);
+  }
+  // specks drifting in the water
+  float spk = 0.0;
+  for (int i = 0; i < 3; i++) {
+    float D = 0.9 + float(i) * 1.7;
+    vec3 x = (ro + rd * D) * 1.5 + vec3(0.0, uTime * 0.04, 0.0);
+    vec3 cell = floor(x), f = fract(x) - 0.5;
+    float h = hash(cell.xy + cell.z * 7.13);
+    vec3 o = vec3(hash(cell.xy + 1.7), hash(cell.yz + 3.1), hash(cell.xz + 5.3)) - 0.5;
+    if (D < tP) spk += smoothstep(0.06, 0.0, length(f.xy - o.xy * 0.7)) * step(0.93, h) * (1.0 - float(i) * 0.25);
+  }
+  col += vec3(0.55, 0.78, 0.92) * spk * 0.12 * exp(ro.y * 0.04);
+  // the floater down here with you
+  float tF = marchFloat(ro, rd, 40.0);
+  if (tF > 0.0 && tF < tP) {
+    vec3 pf = ro + rd * tF;
+    col = mix(col, mix(fogc, floatColor(pf, rd, max(0.0, -pf.y) * 0.55), exp(-tF * 0.16)), uFA);
+  }
+  return col;
+}
+
+float hash3(vec3 c, float k) { return hash(vec2(c.x * 1.71 + c.z * 37.3 + k, c.y * 3.13 - c.z * 0.71 + k * 1.9)); }
+// rain: drops placed in the world, each falling through a tall column of air and starting again somewhere new.
+// Seen from above they shoot away from you toward the sea; seen side-on they fall down the screen.
+vec3 rain3D(vec3 ro, vec3 rd, float tmax) {
+  float acc = 0.0;
+  vec3 cs = vec3(0.5, 3.2, 0.5), prev = vec3(-1e5);
+  for (int i = 0; i < 16; i++) {
+    float D = 0.35 + float(i) * 0.5;
+    if (D > tmax) break;
+    vec3 x = ro + rd * D, cell = floor(x / cs);
+    if (cell == prev) continue;                 // one drop per column of air, drawn once
+    prev = cell;
+    if (hash3(cell, 1.0) < 0.12) continue;
+    float ph = hash3(cell, 2.0) - uTime * 9.5 / cs.y;
+    float cyc = floor(ph), fall = fract(ph) * cs.y;
+    vec3 a = (cell + vec3(hash3(cell, 3.0 + cyc), 0.0, hash3(cell, 4.0 + cyc * 1.3))) * cs + vec3(0.0, fall, 0.0);
+    if (a.y < 0.0) continue;
+    vec3 ba = vec3(0.05, 0.34, 0.025), w0 = ro - a;
+    float dd = dot(rd, ba), bb = dot(ba, ba), den = bb - dd * dd;
+    float sg = den > 1e-5 ? clamp((dot(ba, w0) - dd * dot(rd, w0)) / den, 0.0, 1.0) : 0.5;
+    float tr = dd * sg - dot(rd, w0);
+    if (tr < 0.2 || tr > tmax) continue;
+    float dist = length(w0 + rd * tr - ba * sg), wd = 0.0035 + tr * uTanH * 1.6 / uRes.y;
+    acc += exp(-dist * dist / (wd * wd)) * (0.55 + 0.45 * hash3(cell, 5.0 + cyc)) * exp(-tr * 0.12);
+  }
+  return mix(vec3(0.75, 0.8, 0.86), vec3(0.25, 0.3, 0.38), uNight) * acc * 0.5;
+}
+// snow: flakes drifting down through tall columns of air, each starting again somewhere new
+float snow3D(vec3 ro, vec3 rd, float tmax) {
+  float acc = 0.0;
+  vec3 cs = vec3(0.45, 2.2, 0.45), prev = vec3(-1e5);
+  for (int i = 0; i < 16; i++) {
+    float D = 0.3 + float(i) * 0.42;
+    if (D > tmax) break;
+    vec3 x = ro + rd * D, cell = floor(x / cs);
+    if (cell == prev) continue;
+    prev = cell;
+    if (hash3(cell, 7.0) < 0.15) continue;
+    float ph = hash3(cell, 8.0) - uTime * 0.6 / cs.y;
+    float cyc = floor(ph), fall = fract(ph) * cs.y;
+    vec3 pp = (cell + vec3(hash3(cell, 9.0 + cyc), 0.0, hash3(cell, 10.0 + cyc * 1.3))) * cs
+            + vec3(sin(uTime * 1.3 + hash3(cell, 11.0) * 6.28) * 0.07, fall, cos(uTime * 1.1 + hash3(cell, 12.0) * 6.28) * 0.07);
+    if (pp.y < 0.0) continue;
+    vec3 w = pp - ro; float t = dot(w, rd);
+    if (t < 0.15 || t > tmax) continue;
+    float r = 0.012 + 0.014 * hash3(cell, 13.0 + cyc), dist = length(w - rd * t);
+    acc += smoothstep(r, r * 0.3, dist) * exp(-t * 0.1);
+  }
+  return min(acc, 1.0);
+}
+
+vec3 aces(vec3 x) { return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0); }
+
+void main() {
+  vec2 st = gl_FragCoord.xy / uRes;
+  vec2 uv = st * 2.0 - 1.0;
+  float asp = uRes.x / uRes.y;
+  float pass = exp(-uCamPos.y * uCamPos.y / 0.05);
+  uv += vec2(sin(uv.y * 8.0 + uTime * 5.0), cos(uv.x * 6.0 - uTime * 4.0)) * 0.012 * pass;
+  vec3 rd = normalize(uCamF + uCamR * (uv.x * asp * uTanH) + uCamU * (uv.y * uTanH));
+  vec3 ro = uCamPos;
+  vec3 np = ro + uCamF * 0.05 + uCamR * (uv.x * asp * 0.55) + uCamU * (uv.y * 0.55);
+  float side = np.y - waterH(np.xz);
+  vec3 col = side < 0.0 ? underWater(ro, rd) : aboveWater(ro, rd);
+  if (side >= 0.0 && (uRain > 0.01 || uSnow > 0.01)) {
+    float tmax = rd.y < -0.001 ? -ro.y / rd.y : 60.0;
+    if (uRain > 0.01) col += rain3D(ro, rd, tmax) * uRain;
+    if (uSnow > 0.01) col = mix(col, mix(vec3(0.95, 0.97, 1.0), vec3(0.42, 0.47, 0.56), uNight), snow3D(ro, rd, tmax) * 0.9 * uSnow);
+  }
+  col += vec3(0.55, 0.75, 0.9) * exp(-pow(side / 0.012, 2.0)) * 1.2 * pass;
+  col *= 1.0 - 0.35 * exp(-pow((side + 0.03) / 0.03, 2.0)) * pass;
+  col = pow(aces(col * 1.05), vec3(1.0 / 2.2));
+  col += (hash(gl_FragCoord.xy + fract(uTime) * 91.0) - 0.5) * 0.008;
+  gl_FragColor = vec4(col, 1.0);
+}
+</script>
+
+<script>
+(function () {
+  var reduce = false;
+  try { reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) {}
+  var body = document.body, sheet = document.getElementById('sheet'), title = document.getElementById('hero-title');
+  var begin = document.getElementById('begin'), reserve = document.getElementById('reserve');
+  var pillEl = document.getElementById('pill'), labB = document.getElementById('labB'), hint = document.getElementById('hint');
+  var sea = document.getElementById('sea'), canvas = document.getElementById('gl');
+  var debug = /[?&]debug/.test(location.search);
+
+  function sstep(a, b, x) { x = Math.max(0, Math.min(1, (x - a) / (b - a))); return x * x * (3 - 2 * x); }
+  function lerp(a, b, t) { return a + (b - a) * t; }
+  function v(x, y, z) { return [x, y, z]; }
+  function add(a, b) { return [a[0] + b[0], a[1] + b[1], a[2] + b[2]]; }
+  function sub(a, b) { return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]; }
+  function mul(a, s) { return [a[0] * s, a[1] * s, a[2] * s]; }
+  function dot(a, b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+  function cross(a, b) { return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]; }
+  function norm(a) { var l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; }
+  function mix3(a, b, t) { return [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)]; }
+  function rotAround(p, axis, ang) { var c = Math.cos(ang), s = Math.sin(ang); return add(add(mul(p, c), mul(cross(axis, p), s)), mul(axis, dot(axis, p) * (1 - c))); }
+  function rotY(p, a) { var c = Math.cos(a), s = Math.sin(a); return [p[0] * c + p[2] * s, p[1], -p[0] * s + p[2] * c]; }
+  function size() { return { W: canvas.clientWidth || window.innerWidth, H: canvas.clientHeight || window.innerHeight }; }
+
+  // ---------- the sea ----------
+  var G = 3.0, SWELL = [[0.8, -0.6, 9.0, 0.075], [-0.45, -0.89, 6.0, 0.055], [0.97, 0.24, 3.8, 0.03], [-0.7, 0.71, 2.4, 0.016], [0.2, -0.98, 1.5, 0.008]];
+  var swU = new Float32Array(20), swA = new Float32Array(5);
+  SWELL.forEach(function (s, i) { var l = Math.hypot(s[0], s[1]), k = 2 * Math.PI / s[2]; swU.set([s[0] / l, s[1] / l, k, Math.sqrt(G * k)], i * 4); swA[i] = s[3]; });
+  var SUN = norm(v(0.3, 0.19, -0.93)), MOON = norm(v(-0.4, 0.32, -0.86));
+  var SUNH = norm(v(SUN[0], 0, SUN[2])), MOONH = norm(v(MOON[0], 0, MOON[2])), SUN_EL = Math.asin(SUN[1]), MOON_EL = Math.asin(MOON[1]);
+  function bentIn(L) { var I = mul(L, -1), Nn = [0, 1, 0], eta = 1 / 1.333, c = -dot(Nn, I), k = 1 - eta * eta * (1 - c * c); return norm(add(mul(I, eta), mul(Nn, eta * c - Math.sqrt(Math.max(k, 0))))); }
+  var SUNW = bentIn(SUN);
+  function sky(n) { // n: 0 day ... 1 night. The sun goes down first, the sky darkens, then the moon comes up.
+    var es = lerp(SUN_EL, -0.17, sstep(0.0, 0.62, n)), em = lerp(-0.2, MOON_EL, sstep(0.5, 1.0, n));
+    var sun = norm(add(mul(SUNH, Math.cos(es)), v(0, Math.sin(es), 0))), moon = norm(add(mul(MOONH, Math.cos(em)), v(0, Math.sin(em), 0)));
+    var low = Math.exp(-Math.pow((es - 0.0) / 0.12, 2));
+    var col = [1.0, lerp(0.92, 0.5, low), lerp(0.78, 0.2, low)];
+    return { sun: sun, moon: moon, night: sstep(0.32, 0.88, n), glow: low * (1 - sstep(0.55, 0.85, n)), col: col, light: sstep(0.5, 0.82, n), es: es };
+  }
+  function swellAt(x, z, t) {
+    var h = 0, gx = 0, gz = 0;
+    for (var i = 0; i < 5; i++) {
+      var dx = swU[i * 4], dz = swU[i * 4 + 1], k = swU[i * 4 + 2], w = swU[i * 4 + 3], ph = k * (dx * x + dz * z) - w * t, c = Math.cos(ph);
+      h += swA[i] * Math.sin(ph); gx += swA[i] * k * c * dx; gz += swA[i] * k * c * dz;
+    }
+    return { h: h, gx: gx, gz: gz };
+  }
+
+  // ---------- the ripples ----------
+  var N = 256, HALF = 8, CELL = 2 * HALF / N, hgt = new Float32Array(N * N), vel = new Float32Array(N * N), sponge = new Float32Array(N * N), simBuf = new Uint8Array(N * N * 4);
+  var SIM_C = 1.1, SIM_DAMP = 0.9965, SIM_ENC = 1.6, SIM_HENC = 6, simActive = false, rebounds = [];
+  for (var yy = 0; yy < N; yy++) for (var xx = 0; xx < N; xx++) { var dd = Math.min(xx, yy, N - 1 - xx, N - 1 - yy); sponge[yy * N + xx] = dd < 20 ? 0.86 + 0.14 * (dd / 20) : 1; }
+  function simStep() {
+    var maxA = 0, i, x, y;
+    for (y = 1; y < N - 1; y++) for (x = 1; x < N - 1; x++) { i = y * N + x; vel[i] = (vel[i] + ((hgt[i - 1] + hgt[i + 1] + hgt[i - N] + hgt[i + N]) * 0.25 - hgt[i]) * SIM_C) * SIM_DAMP; }
+    for (i = 0; i < hgt.length; i++) { hgt[i] = (hgt[i] + vel[i]) * sponge[i]; var a = hgt[i] < 0 ? -hgt[i] : hgt[i]; if (a > maxA) maxA = a; }
+    simActive = maxA > 0.0004;
+  }
+  function disturb(wx, wz, amp, sigma) {
+    var gx = (wx + HALF) / CELL, gz = (wz + HALF) / CELL, r = Math.ceil(sigma * 3), x0 = Math.round(gx), z0 = Math.round(gz);
+    for (var dz = -r; dz <= r; dz++) for (var dx = -r; dx <= r; dx++) {
+      var x = x0 + dx, z = z0 + dz; if (x < 1 || z < 1 || x >= N - 1 || z >= N - 1) continue;
+      hgt[z * N + x] -= amp * Math.exp(-((x - gx) * (x - gx) + (z - gz) * (z - gz)) / (2 * sigma * sigma));
+    }
+    simActive = true;
+  }
+  function drop(wx, wz, amp, now) {
+    disturb(wx, wz, amp, 2.2);
+    rebounds.push({ t: now + 140, x: wx, z: wz, a: -0.55 * amp, s: 2.9 }, { t: now + 320, x: wx, z: wz, a: 0.3 * amp, s: 3.6 }, { t: now + 520, x: wx, z: wz, a: -0.15 * amp, s: 4.3 });
+  }
+  function simAt(x, z) {
+    var gx = Math.max(2, Math.min(N - 3, Math.round((x + HALF) / CELL))), gz = Math.max(2, Math.min(N - 3, Math.round((z + HALF) / CELL))), i = gz * N + gx;
+    return { h: hgt[i], v: vel[i] * 60, gx: (hgt[i + 1] - hgt[i - 1]) / (2 * CELL), gz: (hgt[i + N] - hgt[i - N]) / (2 * CELL) };
+  }
+
+  // ---------- camera ----------
+  var cam = { pos: v(0, 6.5, 3.8), f: v(0, -1, 0), r: v(1, 0, 0), u: v(0, 0, -1), tanH: Math.tan(24 * Math.PI / 180) };
+  function basis(pos, at) {
+    var f = norm(sub(at, pos)), k = sstep(0.86, 0.999, -f[1]);
+    var r = norm(cross(f, norm(v(0, 1 - k, -k)))), u = cross(r, f);
+    return { pos: pos, f: f, r: r, u: u };
+  }
+  function setCamera(pos, at) { var b = basis(pos, at); cam.pos = b.pos; cam.f = b.f; cam.r = b.r; cam.u = b.u; }
+  var orbit = { az: 0, el: 0.42, r: 3.9, vaz: 0, vel: 0, idle: 0 };
+  function restCamera(t) {
+    var S = size(), back = S.W / S.H < 0.75 ? 1.3 : 1, r = orbit.r * back;
+    var pos = v(Math.sin(orbit.az) * Math.cos(orbit.el) * r, Math.sin(orbit.el) * r, Math.cos(orbit.az) * Math.cos(orbit.el) * r);
+    // aim above the floater when low, so the sky is in view; straight at it when looking down
+    var lift = 1.05 * r / 4.6 * (1 - sstep(0.45, 1.1, orbit.el));
+    var ahead = v(-Math.sin(orbit.az) * lift * 0.6, lift, -Math.cos(orbit.az) * lift * 0.6);
+    return { pos: add(pos, v(Math.sin(t * 0.13) * 0.04, Math.sin(t * 0.11) * 0.03, Math.cos(t * 0.09) * 0.03)), at: ahead };
+  }
+  function project(p) {
+    var S = size(), q = sub(p, cam.pos), z = dot(q, cam.f);
+    if (z < 0.05) return null;
+    var x = dot(q, cam.r) / (z * cam.tanH * (S.W / S.H)), y = dot(q, cam.u) / (z * cam.tanH);
+    return [(x * 0.5 + 0.5) * S.W, (0.5 - y * 0.5) * S.H, z];
+  }
+  function rayToSea(px, py) {
+    var S = size(), x = (px / S.W) * 2 - 1, y = 1 - (py / S.H) * 2;
+    var rd = norm(add(cam.f, add(mul(cam.r, x * (S.W / S.H) * cam.tanH), mul(cam.u, y * cam.tanH))));
+    if (rd[1] > -0.01 || cam.pos[1] <= 0) return null;
+    var t = -cam.pos[1] / rd[1]; return add(cam.pos, mul(rd, t));
+  }
+  function homography(w, h, p) {
+    var x0 = p[0][0], y0 = p[0][1], x1 = p[1][0], y1 = p[1][1], x2 = p[2][0], y2 = p[2][1], x3 = p[3][0], y3 = p[3][1];
+    var dx1 = x1 - x2, dx2 = x3 - x2, dx3 = x0 - x1 + x2 - x3, dy1 = y1 - y2, dy2 = y3 - y2, dy3 = y0 - y1 + y2 - y3, a, b, c, d, e, f, g, hh;
+    if (Math.abs(dx3) < 1e-9 && Math.abs(dy3) < 1e-9) { g = 0; hh = 0; }
+    else { var det = dx1 * dy2 - dx2 * dy1; g = (dx3 * dy2 - dx2 * dy3) / det; hh = (dx1 * dy3 - dx3 * dy1) / det; }
+    a = x1 - x0 + g * x1; b = x3 - x0 + hh * x3; c = x0; d = y1 - y0 + g * y1; e = y3 - y0 + hh * y3; f = y0;
+    return 'matrix3d(' + [a / w, d / w, 0, g / w, b / h, e / h, 0, hh / h, 0, 0, 1, 0, c, f, 0, 1].map(function (n) { return n.toFixed(6); }).join(',') + ')';
+  }
+
+  // ---------- the floater: sized to fit its arrow and words like a real button ----------
+  var HH = 0.2, HW = 0.68, TH = 0.1, ROUND = 0.078, LENS = -0.48;
+  var boat = { x: 0, z: 0, vx: 0, vz: 0, yaw: 0 };
+  var MOOR = 3.0, DRAG = 2.2, KSL = 10, KRAD = 260, KSW = 0.6, REACH = 0.32;
+  var labelCv = document.createElement('canvas');
+  function layoutFloater() { // left padding | words | gap | round button, set into the right end (proportions of the reference)
+    var c = labelCv.getContext('2d'), Hc = 256;
+    c.font = '500 ' + Math.round(Hc * 0.34) + 'px Inter, system-ui, sans-serif';
+    try { c.letterSpacing = '0px'; } catch (e) {}
+    var tw = c.measureText('Take me in').width / Hc * (2 * HH);
+    var R = HH * 0.68, gap = HH * 0.5, leftPad = HH * 0.74;
+    HW = (leftPad + tw + gap + 2 * R + (HH - R)) / 2;
+    LENS = HW - HH;
+    return { tw: tw, R: R, gap: gap, leftPad: leftPad };
+  }
+
+  // ---------- the paper and its CTA ----------
+  var paper = { c: v(0, -6, -3), R: v(1, 0, 0), U: v(0, 1, 0), hw: 1, hh: 0.6, kpx: 0.003, D: 3 }, sheetSize = { w: 960, h: 520 };
+  function measure() {
+    sheet.style.transform = 'none';
+    sheetSize = { w: sheet.offsetWidth, h: sheet.offsetHeight };
+    begin.style.width = reserve.offsetWidth + 'px'; begin.style.height = reserve.offsetHeight + 'px';
+    layoutFloater();
+  }
+  function ctaLocal() { // the CTA's box inside the sheet, in sheet pixels
+    var x = 0, y = 0, el = reserve;
+    while (el && el !== sheet) { x += el.offsetLeft; y += el.offsetTop; el = el.offsetParent; }
+    return { x: x, y: y, w: reserve.offsetWidth, h: reserve.offsetHeight };
+  }
+  function placePaper(endCam) { // hang the paper in front of where the dive ends, at a size that reads like a page
+    var S = size(), D = 3.0;
+    var s = Math.min(1, 0.86 * S.H / sheetSize.h, 0.96 * S.W / sheetSize.w);
+    var kpx = 2 * D * cam.tanH / S.H * s;
+    var b = basis(endCam.pos, endCam.at);
+    paper = { c: add(endCam.pos, mul(b.f, D)), R: b.r, U: b.u, hw: sheetSize.w * kpx / 2, hh: sheetSize.h * kpx / 2, kpx: kpx, D: D };
+  }
+  function paperPoint(px, py, P) { return add(P.c, add(mul(P.R, (px - sheetSize.w / 2) * P.kpx), mul(P.U, (sheetSize.h / 2 - py) * P.kpx))); }
+  function swayed() { // the paper drifts a little in the water
+    var t = clock, R = rotAround(paper.R, paper.U, Math.sin(t * 0.37) * 0.035), U = paper.U;
+    var n = cross(R, U); U = rotAround(U, R, Math.sin(t * 0.29 + 1) * 0.03); R = norm(cross(U, n));
+    return { c: add(paper.c, mul(U, Math.sin(t * 0.5) * 0.025)), R: R, U: U, kpx: paper.kpx };
+  }
+
+  // ---------- the timeline of the blow ----------
+  var TI = 0.55, TOTAL = 5.3;
+  function sinkDepth(tau) {
+    if (tau <= 0) return 0;
+    var a = 0.8, b = 2.2, I;
+    if (tau < a) I = 0; else if (tau < b) { var u = (tau - a) / (b - a); I = (b - a) * (u * u * u - u * u * u * u / 2); } else I = (b - a) * 0.5 + (tau - b);
+    return 0.2 * (1 - Math.exp(-tau / 0.11)) + 0.34 * tau + 1.1 * I;
+  }
+  var state = 'surface', T = 0, tween = null, clock = 0, clickT = -1, struck = false, hover = 0, hoverT = 0, start = null, pauseT = null;
+  function poseAt(T) { // the floater and the camera, T seconds into the dive (pure: used for the paper's place too)
+    var tau = T - TI, depth = sinkDepth(tau), az = start.az;
+    var w = sstep(2.0, 4.7, T), ahead = rotY(v(0, 0, -2.0), az);
+    var c = v(lerp(start.c[0], ahead[0], w), start.c[1] - depth, lerp(start.c[2], ahead[2], w));
+    var rock = tau > 0 ? 0.2 * Math.exp(-tau * 2.4) * Math.sin(tau * 9) : 0;
+    var th = Math.PI / 2 * sstep(2.6, 4.8, T);
+    var Nn = norm(mix3(start.N, rotY(v(0, Math.cos(th), Math.sin(th)), az), sstep(0, 0.5, tau)));
+    var y0 = Math.atan2(-start.R[2], start.R[0]), dy = az - y0; while (dy > Math.PI) dy -= 2 * Math.PI; while (dy < -Math.PI) dy += 2 * Math.PI;
+    var yw = y0 + dy * sstep(0.7, 3.6, T);
+    var R = v(Math.cos(yw), 0, -Math.sin(yw)); R = norm(sub(R, mul(Nn, dot(R, Nn))));
+    Nn = rotAround(Nn, R, rock);
+    var camPos, camAt, imp = add(start.c, rotY(v(0, 1.85, 1.15), az));
+    if (T < TI) { var u = Math.pow(T / TI, 2); camPos = mix3(start.cam, imp, u); camAt = mix3(start.at, start.c, sstep(0, 1, T / TI * 1.4)); }
+    else {
+      var ride = add(c, rotY(v(0, 1.85 + 0.25 * sstep(0.2, 1.7, tau), 1.15 + 0.35 * sstep(0.2, 2.1, tau)), az));
+      var e = sstep(1.9, 4.9, T);
+      camPos = mix3(ride, add(v(0, start.c[1] - sinkDepth(TOTAL - TI) + 0.85, 0), rotY(v(0, 0, 2.8), az)), e);
+      camAt = add(c, v(0, 0.45 * e, 0));
+    }
+    return { c: c, R: R, N: Nn, camPos: camPos, camAt: camAt, tau: tau };
+  }
+  function easeIO(k) { return -(Math.cos(Math.PI * k) - 1) / 2; }
+  function setHash(h) { try { history.replaceState(null, '', h); } catch (e) {} }
+  function arrive() {
+    state = 'under'; body.classList.add('is-under'); sheet.inert = false; setHash('#hero');
+    setTimeout(function () { if (state === 'under') begin.style.visibility = 'hidden'; }, 500);
+    setTimeout(function () { try { title.focus({ preventScroll: true }); } catch (e) {} }, 500);
+  }
+  function diveIn() {
+    if (state !== 'surface') return;
+    state = 'diving'; clickT = performance.now(); struck = false; T = 0;
+    start = { c: pose.c.slice(), R: pose.R.slice(), N: pose.N.slice(), cam: cam.pos.slice(), at: add(cam.pos, mul(cam.f, 7)), az: Math.atan2(cam.pos[0] - pose.c[0], cam.pos[2] - pose.c[2]) };
+    var end = poseAt(TOTAL); placePaper({ pos: end.camPos, at: end.camAt });
+    body.classList.add('is-diving'); hint.classList.add('is-gone');
+    if (reduce) { T = TOTAL; arrive(); }
+  }
+  function rise() {
+    if (state !== 'under') return;
+    begin.style.visibility = 'visible';
+    state = 'rising'; body.classList.remove('is-under'); sheet.inert = true;
+    tween = { from: TOTAL, to: 0, ms: reduce ? 1 : 4600, t0: performance.now() };
+  }
+  var wx = { time: 'day', sky: 'clear' }, envNow = { night: 0, rain: 0, snow: 0 };
+  var holdNight = null;
+  try { var saved = JSON.parse(localStorage.getItem('tarn-weather') || 'null'); if (saved && saved.time && saved.sky) wx = saved; } catch (e) {}
+  function syncEnv() {
+    document.querySelectorAll('#env button').forEach(function (b) { b.setAttribute('aria-pressed', wx[b.dataset.k] === b.dataset.v ? 'true' : 'false'); });
+  }
+  document.querySelectorAll('#env button').forEach(function (b) {
+    b.addEventListener('click', function () { wx[b.dataset.k] = b.dataset.v; syncEnv(); try { localStorage.setItem('tarn-weather', JSON.stringify(wx)); } catch (e) {} });
+  });
+  syncEnv();
+  envNow.night = wx.time === 'night' ? 1 : 0; envNow.rain = wx.sky === 'rain' ? 1 : 0; envNow.snow = wx.sky === 'snow' ? 1 : 0;
+  var ptr = null, suppressClick = false;
+  begin.addEventListener('click', function () { if (suppressClick) { suppressClick = false; return; } diveIn(); });
+  begin.addEventListener('pointerenter', function () { hoverT = 1; });
+  begin.addEventListener('pointerleave', function () { hoverT = 0; });
+  document.getElementById('surface').addEventListener('click', function (ev) { ev.preventDefault(); rise(); });
+  reserve.addEventListener('click', function (ev) { ev.preventDefault(); });
+  document.addEventListener('keydown', function (ev) { if (ev.key === 'Escape') rise(); });
+
+  // drag to orbit, tap the water to make a ripple, scroll to come closer
+  document.addEventListener('pointerdown', function (ev) {
+    if (ev.target.closest && ev.target.closest('.sheet a, .btn, #env')) return;
+    ptr = { x: ev.clientX, y: ev.clientY, lx: ev.clientX, ly: ev.clientY, t: performance.now(), moved: false, onBtn: !!(ev.target.closest && ev.target.closest('#begin')) };
+    suppressClick = false; orbit.vaz = 0; orbit.vel = 0;
+  });
+  document.addEventListener('pointermove', function (ev) {
+    if (!ptr || state !== 'surface') return;
+    if (!ptr.moved && Math.hypot(ev.clientX - ptr.x, ev.clientY - ptr.y) > 6) { ptr.moved = true; suppressClick = true; body.classList.add('is-orbiting'); hint.classList.add('is-gone'); }
+    if (ptr.moved) {
+      var dx = ev.clientX - ptr.lx, dy = ev.clientY - ptr.ly, now = performance.now(), dts = Math.max(0.008, (now - ptr.t) / 1000);
+      orbit.az -= dx * 0.006; orbit.el = Math.max(0.2, Math.min(1.45, orbit.el + dy * 0.004));
+      orbit.vaz = -dx * 0.006 / dts; orbit.vel = dy * 0.004 / dts;
+      ptr.lx = ev.clientX; ptr.ly = ev.clientY; ptr.t = now; orbit.idle = 0;
+    }
+  });
+  function endPtr(ev) {
+    if (!ptr) return;
+    if (!ptr.moved && !ptr.onBtn && state === 'surface' && ev && ev.type === 'pointerup') {
+      var p = rayToSea(ev.clientX, ev.clientY);
+      if (p) { drop(p[0], p[2], 0.16, performance.now()); hint.classList.add('is-gone'); }
+    }
+    ptr = null; body.classList.remove('is-orbiting');
+  }
+  window.addEventListener('pointerup', endPtr); window.addEventListener('pointercancel', endPtr); window.addEventListener('blur', function () { endPtr(null); });
+  window.addEventListener('wheel', function (ev) { if (state !== 'surface') return; orbit.r = Math.max(3.2, Math.min(10, orbit.r * Math.exp(ev.deltaY * 0.0012))); orbit.idle = 0; }, { passive: true });
+
+  // ---------- each frame ----------
+  var pose = { c: v(0, 0, 0), R: v(1, 0, 0), N: v(0, 1, 0), V: v(0, 0, -1), alpha: 1, impact: [0, 0, -1, 0], pa: 0 };
+  function floatingPose(dt) {
+    var t = clock + 20, sw = swellAt(boat.x, boat.z, t), sm = simAt(boat.x, boat.z);
+    var live = state === 'surface' ? 1 : 0;
+    var fx = (-sm.gx * KSL + (-sm.v * sm.gx) * KRAD - sw.gx * KSW) * live, fz = (-sm.gz * KSL + (-sm.v * sm.gz) * KRAD - sw.gz * KSW) * live;
+    boat.vx += (fx - boat.x * MOOR - boat.vx * DRAG) * dt; boat.vz += (fz - boat.z * MOOR - boat.vz * DRAG) * dt;
+    boat.x += boat.vx * dt; boat.z += boat.vz * dt;
+    var dist = Math.hypot(boat.x, boat.z), cap = dist > 1e-4 ? REACH * Math.tanh(dist / REACH) / dist : 1;
+    var bx = boat.x * cap, bz = boat.z * cap;
+    boat.yaw = Math.sin(clock * 0.17) * 0.025 + Math.sin(clock * 0.11 + 1) * 0.015 + Math.max(-0.08, Math.min(0.08, boat.vx * 0.12));
+    var n = norm(v(-(sw.gx + sm.gx * 0.8) * 0.85, 1, -(sw.gz + sm.gz * 0.8) * 0.85));
+    var R = v(Math.cos(boat.yaw), 0, -Math.sin(boat.yaw)); R = norm(sub(R, mul(n, dot(R, n))));
+    return { c: v(bx, sw.h + sm.h * 0.85 - 0.012, bz), R: R, N: n };
+  }
+  function update(dt, now) {
+    dt = Math.min(dt, 0.05);
+    hover += (hoverT - hover) * Math.min(1, dt * 6);
+    var fl = floatingPose(dt);
+    if (state === 'diving') T = pauseT !== null ? pauseT : Math.min(TOTAL, (now - clickT) / 1000);
+    if (state === 'rising' && tween) { var k = Math.min(1, (now - tween.t0) / tween.ms); T = lerp(tween.from, tween.to, easeIO(k)); if (k >= 1) { tween = null; T = 0; state = 'surface'; body.classList.remove('is-diving'); setHash('#start'); try { begin.focus({ preventScroll: true }); } catch (e) {} } }
+    if (state === 'under') T = TOTAL;
+    if (state === 'diving' && T >= TOTAL) arrive();
+
+    var c, R, Nn, camPos, camAt, rest = restCamera(clock);
+    if (T <= 0 || !start) { c = fl.c; R = fl.R; Nn = fl.N; camPos = rest.pos; camAt = rest.at; pose.impact = [0, 0, -1, 0]; }
+    else {
+      var P = poseAt(T); c = P.c; R = P.R; Nn = P.N; camPos = P.camPos; camAt = P.camAt;
+      if (state === 'diving' && !struck && P.tau >= 0) {
+        struck = true;
+        for (var s = -2; s <= 2; s++) { var px = add(start.c, mul(start.R, HW * s / 2.4)); disturb(px[0], px[2], 0.07, 3.2); }
+        rebounds.push({ t: now + 130, x: start.c[0], z: start.c[2], a: -0.09, s: 6 }, { t: now + 300, x: start.c[0], z: start.c[2], a: 0.05, s: 7 }, { t: now + 520, x: start.c[0], z: start.c[2], a: -0.03, s: 8 });
+      }
+      if (state === 'rising' && struck && T < TI) { struck = false; drop(start.c[0], start.c[2], 0.08, now); }
+      if (T >= TI && state === 'diving') { var shake = Math.exp(-P.tau * 9); camPos = add(camPos, add(mul(cam.r, Math.sin(P.tau * 63) * 0.025 * shake), v(0, Math.sin(P.tau * 71 + 1) * 0.045 * shake, 0))); }
+      if (state === 'rising' && T < 0.2) { var bk = 1 - T / 0.2; camPos = mix3(camPos, rest.pos, bk); camAt = mix3(camAt, rest.at, bk); c = mix3(c, fl.c, bk); Nn = norm(mix3(Nn, fl.N, bk)); }
+      pose.impact = [start.c[0], start.c[2], state === 'diving' && P.tau >= 0 ? P.tau : -1, 1];
+    }
+    setCamera(camPos, camAt);
+    var V = cross(Nn, R);
+    pose.c = c; pose.R = R; pose.N = Nn; pose.V = V;
+
+    // the paper: mapped onto its place in the water, coming out of the blue as you sink toward it
+    var d = T / TOTAL, sw = swayed();
+    var pc = [[0, 0], [sheetSize.w, 0], [sheetSize.w, sheetSize.h], [0, sheetSize.h]].map(function (q) { return project(paperPoint(q[0], q[1], sw)); });
+    var pa = sstep(0.5, 0.92, d);
+    pose.pa = pa; pose.paper = sw;
+    if (pc.every(function (q) { return q; }) && pa > 0.001) {
+      sheet.style.transform = homography(sheetSize.w, sheetSize.h, pc);
+      var dist = Math.hypot(sw.c[0] - cam.pos[0], sw.c[1] - cam.pos[1], sw.c[2] - cam.pos[2]), fog = 1 - Math.exp(-Math.max(dist - paper.D * 0.92, 0) * 0.24);
+      sheet.style.opacity = (pa * (1 - fog)).toFixed(3);
+      sheet.style.filter = fog > 0.03 ? 'blur(' + (fog * 2.5).toFixed(2) + 'px)' : '';
+    } else sheet.style.opacity = '0';
+
+    // the button element sits on the floater's top face, then becomes the paper's button
+    var m = sstep(0.84, 1.0, d);
+    var topC = add(c, mul(Nn, TH));
+    var corners = [add(add(topC, mul(R, -HW)), mul(V, HH)), add(add(topC, mul(R, HW)), mul(V, HH)), add(add(topC, mul(R, HW)), mul(V, -HH)), add(add(topC, mul(R, -HW)), mul(V, -HH))].map(project);
+    var cl = ctaLocal();
+    var target = [[cl.x, cl.y], [cl.x + cl.w, cl.y], [cl.x + cl.w, cl.y + cl.h], [cl.x, cl.y + cl.h]].map(function (q) { return project(paperPoint(q[0], q[1], sw)); });
+    var ok = corners.every(function (p) { return p; }), okT = target.every(function (p) { return p; });
+    if (ok && okT) begin.style.transform = homography(cl.w, cl.h, target.map(function (tp, i) { return [lerp(corners[i][0], tp[0], m), lerp(corners[i][1], tp[1], m)]; }));
+    else if (ok) begin.style.transform = homography(cl.w, cl.h, corners);
+    pillEl.style.opacity = sstep(0.0, 0.6, m).toFixed(3); labB.style.opacity = sstep(0.3, 0.9, m).toFixed(3);
+    pose.alpha = 1 - sstep(0.2, 0.75, m);
+    begin.style.pointerEvents = state === 'surface' ? 'auto' : 'none';
+  }
+
+  // ---------- WebGL ----------
+  var gl = null;
+  try { gl = canvas.getContext('webgl', { antialias: false, alpha: false, powerPreference: 'high-performance' }); } catch (e) {}
+  var U = {}, texSim = null, texLabel = null;
+  function compile(type, src) {
+    var s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) { console.error(gl.getShaderInfoLog(s)); return null; }
+    return s;
+  }
+  if (gl) {
+    var vs = compile(gl.VERTEX_SHADER, document.getElementById('vs').textContent), fsh = compile(gl.FRAGMENT_SHADER, document.getElementById('fs').textContent);
+    var prog = vs && fsh ? gl.createProgram() : null;
+    if (prog) { gl.attachShader(prog, vs); gl.attachShader(prog, fsh); gl.linkProgram(prog); if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) { console.error(gl.getProgramInfoLog(prog)); prog = null; } }
+    if (!prog) gl = null;
+    else {
+      gl.useProgram(prog);
+      var buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+      var loc = gl.getAttribLocation(prog, 'p'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+      ['uRes', 'uTime', 'uCamPos', 'uCamF', 'uCamR', 'uCamU', 'uTanH', 'uSim', 'uSimHalf', 'uSimEnc', 'uSimHEnc', 'uSw', 'uSwA', 'uSun', 'uSunW', 'uMoon', 'uSunCol', 'uGlow', 'uLD', 'uLK', 'uNight', 'uOver', 'uRain', 'uSnow',
+       'uFC', 'uFR', 'uFN', 'uFV', 'uFHalf', 'uFTh', 'uFRound', 'uFBR', 'uFA', 'uFHover', 'uFLens', 'uLabel', 'uImpact', 'uPC', 'uPR', 'uPU', 'uPHalf', 'uPA', 'uPD']
+        .forEach(function (n) { U[n] = gl.getUniformLocation(prog, n); });
+      var makeTex = function (unit, px) {
+        var t = gl.createTexture(); gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, t);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(px));
+        return t;
+      };
+      texSim = makeTex(0, [128, 128, 128, 255]); texLabel = makeTex(2, [0, 0, 0, 0]);
+      sea.classList.add('is-live');
+    }
+  }
+  function uploadSim() {
+    var o = 0, i, x, y;
+    for (y = 0; y < N; y++) for (x = 0; x < N; x++, o += 4) {
+      i = y * N + x;
+      var sx = x > 0 && x < N - 1 ? (hgt[i + 1] - hgt[i - 1]) / (2 * CELL) : 0, sz = y > 0 && y < N - 1 ? (hgt[i + N] - hgt[i - N]) / (2 * CELL) : 0;
+      var r = 127.5 + sx * SIM_ENC * 127.5, g = 127.5 + sz * SIM_ENC * 127.5, b = 127.5 + hgt[i] * SIM_HENC * 127.5;
+      simBuf[o] = r < 0 ? 0 : r > 255 ? 255 : r; simBuf[o + 1] = g < 0 ? 0 : g > 255 ? 255 : g; simBuf[o + 2] = b < 0 ? 0 : b > 255 ? 255 : b; simBuf[o + 3] = 255;
+    }
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texSim);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false); gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, N, N, 0, gl.RGBA, gl.UNSIGNED_BYTE, simBuf);
+  }
+  function paintLabel() { // the words in dark ink, and a white diver in the round button
+    if (!gl) return;
+    var L = layoutFloater(), Hc = 256, W = Math.round(Hc * HW / HH);
+    labelCv.width = W; labelCv.height = Hc;
+    var lc = labelCv.getContext('2d'), k = Hc / (2 * HH), cy = Hc / 2;
+    lc.clearRect(0, 0, W, Hc);
+    lc.fillStyle = '#ffffff'; lc.textAlign = 'left'; lc.textBaseline = 'middle';
+    lc.shadowColor = 'rgba(0, 18, 36, .55)'; lc.shadowBlur = Hc * 0.05; lc.shadowOffsetY = Hc * 0.012;
+    lc.font = '500 ' + Math.round(Hc * 0.34) + 'px Inter, system-ui, sans-serif';
+    try { lc.letterSpacing = '0px'; } catch (e) {}
+    lc.fillText('Take me in', L.leftPad * k, cy + Hc * 0.018);
+    lc.shadowColor = 'transparent';
+    // the diver: arched over the water, arms first
+    var cx = (2 * HW - HH) * k, s = L.R * k * 0.62;
+    lc.strokeStyle = '#ffffff'; lc.fillStyle = '#ffffff'; lc.lineCap = 'round'; lc.lineJoin = 'round'; lc.lineWidth = s * 0.2;
+    lc.beginPath(); lc.moveTo(cx + 0.62 * s, cy - 0.62 * s); lc.quadraticCurveTo(cx + 0.28 * s, cy - 0.5 * s, cx + 0.02 * s, cy - 0.08 * s); lc.lineTo(cx - 0.36 * s, cy + 0.36 * s); lc.stroke();
+    lc.beginPath(); lc.arc(cx - 0.12 * s, cy - 0.3 * s, s * 0.14, 0, Math.PI * 2); lc.fill();
+    lc.lineWidth = s * 0.14;
+    lc.beginPath(); lc.moveTo(cx - 0.72 * s, cy + 0.66 * s);
+    lc.bezierCurveTo(cx - 0.45 * s, cy + 0.5 * s, cx - 0.25 * s, cy + 0.82 * s, cx, cy + 0.66 * s);
+    lc.bezierCurveTo(cx + 0.25 * s, cy + 0.5 * s, cx + 0.45 * s, cy + 0.82 * s, cx + 0.72 * s, cy + 0.66 * s); lc.stroke();
+    gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, texLabel);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true); gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, labelCv);
+  }
+
+  var scale = Math.min(window.devicePixelRatio || 1, 1.25), dirty = true;
+  function resize() {
+    var w = Math.max(1, Math.round(canvas.clientWidth * scale)), h = Math.max(1, Math.round(canvas.clientHeight * scale));
+    if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; if (gl) gl.viewport(0, 0, w, h); dirty = true; }
+  }
+  window.addEventListener('resize', function () { dirty = true; });
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(function () { dirty = true; });
+  window.addEventListener('load', function () { dirty = true; });
+
+  if (location.hash === '#hero') {
+    state = 'under'; T = TOTAL; struck = true; body.classList.add('is-diving', 'is-under'); sheet.inert = false; begin.style.visibility = 'hidden';
+    start = { c: v(0, -0.012, 0), R: v(1, 0, 0), N: v(0, 1, 0), cam: v(0, 5.4, 3.5), at: v(0, 0, 0), az: 0 };
+  }
+
+  var last = performance.now(), acc = 0;
+  function frame(now) {
+    var dt = Math.min((now - last) / 1000, 0.1); last = now;
+    clock += dt * (reduce ? 0.3 : 1);
+    if (state === 'surface' && !(ptr && ptr.moved)) {
+      orbit.az += orbit.vaz * dt; orbit.el = Math.max(0.16, Math.min(1.45, orbit.el + orbit.vel * dt));
+      orbit.vaz *= Math.exp(-dt * 2.6); orbit.vel *= Math.exp(-dt * 2.6);
+      orbit.idle += dt; if (orbit.idle > 6 && !reduce) orbit.az += 0.035 * dt * Math.min(1, (orbit.idle - 6) / 3);
+    }
+    var ek = Math.min(1, dt * 1.4);
+    var nt = wx.time === 'night' ? 1 : 0, step = dt / (reduce ? 0.5 : 6.5);   // about six seconds for the sun to set or rise
+    envNow.night = nt > envNow.night ? Math.min(nt, envNow.night + step) : Math.max(nt, envNow.night - step);
+    if (holdNight !== null) envNow.night = holdNight;
+    envNow.rain += ((wx.sky === 'rain' ? 1 : 0) - envNow.rain) * ek;
+    envNow.snow += ((wx.sky === 'snow' ? 1 : 0) - envNow.snow) * ek;
+    if (envNow.rain > 0.05) { // drops landing on the sea
+      var nd = Math.round(envNow.rain * 5 * Math.min(2, dt * 60));
+      for (var di = 0; di < nd; di++) disturb((Math.random() - 0.5) * 14, (Math.random() - 0.5) * 14, 0.01 + Math.random() * 0.014, 1.1);
+    }
+    resize();
+    if (dirty) { dirty = false; measure(); paintLabel(); if (start && state !== 'surface') { var e = poseAt(TOTAL); placePaper({ pos: e.camPos, at: e.camAt }); } }
+    for (var j = rebounds.length - 1; j >= 0; j--) if (rebounds[j].t <= now) { var rb = rebounds[j]; disturb(rb.x, rb.z, rb.a, rb.s); rebounds.splice(j, 1); }
+    acc += Math.min(dt, 0.05) * (reduce ? 0.4 : 1);
+    var steps = 0, stepped = false; while (acc >= 1 / 60 && steps < 3) { if (simActive) { simStep(); stepped = true; } acc -= 1 / 60; steps++; }
+    update(dt, now);
+
+    if (gl) {
+      if (stepped) uploadSim();
+      var P = pose.paper || paper;
+      gl.uniform2f(U.uRes, canvas.width, canvas.height);
+      gl.uniform1f(U.uTime, clock + 20);
+      gl.uniform3fv(U.uCamPos, cam.pos); gl.uniform3fv(U.uCamF, cam.f); gl.uniform3fv(U.uCamR, cam.r); gl.uniform3fv(U.uCamU, cam.u);
+      gl.uniform1f(U.uTanH, cam.tanH);
+      gl.uniform1i(U.uSim, 0); gl.uniform1f(U.uSimHalf, HALF); gl.uniform1f(U.uSimEnc, SIM_ENC); gl.uniform1f(U.uSimHEnc, SIM_HENC);
+      gl.uniform4fv(U.uSw, swU); gl.uniform1fv(U.uSwA, swA);
+      var sk = sky(envNow.night);
+      gl.uniform3fv(U.uSun, sk.sun); gl.uniform3fv(U.uMoon, sk.moon); gl.uniform3fv(U.uSunCol, sk.col); gl.uniform1f(U.uGlow, sk.glow);
+      gl.uniform3fv(U.uSunW, bentIn(sk.light > 0.5 ? sk.moon : (sk.sun[1] > 0.02 ? sk.sun : SUN)));
+      var over = Math.max(envNow.rain, envNow.snow * 0.85);
+      gl.uniform3fv(U.uLD, norm(mix3(sk.sun[1] > 0.0 ? sk.sun : SUN, sk.moon[1] > 0.0 ? sk.moon : MOON, sk.light)));
+      gl.uniform1f(U.uLK, lerp(1, 0.35, sk.night) * (1 - 0.85 * over) * Math.max(sstep(-0.06, 0.08, sk.es), sk.light));
+      gl.uniform1f(U.uNight, sk.night); gl.uniform1f(U.uOver, over); gl.uniform1f(U.uRain, envNow.rain); gl.uniform1f(U.uSnow, envNow.snow);
+      gl.uniform3fv(U.uFC, pose.c); gl.uniform3fv(U.uFR, pose.R); gl.uniform3fv(U.uFN, pose.N); gl.uniform3fv(U.uFV, pose.V);
+      gl.uniform2f(U.uFHalf, HW, HH); gl.uniform1f(U.uFTh, TH); gl.uniform1f(U.uFRound, ROUND); gl.uniform1f(U.uFBR, HW + 0.12);
+      gl.uniform1f(U.uFA, pose.alpha); gl.uniform1f(U.uFHover, hover); gl.uniform1f(U.uFLens, LENS);
+      gl.uniform1i(U.uLabel, 2);
+      gl.uniform4f(U.uImpact, pose.impact[0], pose.impact[1], pose.impact[2] > 4 ? -1 : pose.impact[2], pose.impact[3]);
+      gl.uniform3fv(U.uPC, P.c); gl.uniform3fv(U.uPR, P.R); gl.uniform3fv(U.uPU, P.U);
+      gl.uniform2f(U.uPHalf, sheetSize.w * paper.kpx / 2, sheetSize.h * paper.kpx / 2); gl.uniform1f(U.uPA, pose.pa); gl.uniform1f(U.uPD, paper.D);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  if (debug) window.__sea = {
+    night: function (n) { holdNight = n; },
+    at: function (t) { if (state === 'surface') diveIn(); pauseT = t; },
+    drop: function (px, py) { var p = rayToSea(px, py); if (p) drop(p[0], p[2], 0.16, performance.now()); },
+    boat: function () { return { x: boat.x, z: boat.z }; }
+  };
+})();
+</script>
+
+</body>
+</html>
